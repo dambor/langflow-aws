@@ -5,6 +5,32 @@
 
 This guide explains how to configure Langflow running on Amazon EKS to access AWS Bedrock using IAM Roles for Service Accounts (IRSA). This approach eliminates the need for hardcoded AWS credentials and follows AWS security best practices.
 
+### Architecture Overview
+
+```mermaid
+graph TD
+    subgraph "Amazon EKS Cluster"
+        Pod["Langflow Pod"]
+        SA["Service Account (langflow-sa)"]
+        OIDC["OIDC Identity Provider"]
+    end
+
+    subgraph "AWS IAM"
+        Role["IAM Role (LangflowBedrockRole)"]
+        Policy["Bedrock Policy"]
+    end
+
+    subgraph "AWS Services"
+        Bedrock["Amazon Bedrock"]
+    end
+
+    Pod -->|"1. Associated with"| SA
+    SA -->|"2. Authenticates via"| OIDC
+    OIDC -->|"3. Assumes"| Role
+    Role -->|"4. Has Permissions"| Policy
+    Pod -->|"5. Accesses"| Bedrock
+```
+
 ---
 
 ## Prerequisites
