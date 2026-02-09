@@ -152,6 +152,34 @@ aws iam create-role \
   --description "Role for Langflow to access AWS Bedrock via IRSA"
 ```
 
+### 2.4 Create S3 policy
+cat > s3-permissions.json << 'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-bucket-name/*",
+        "arn:aws:s3:::your-bucket-name"
+      ]
+    }
+  ]
+}
+EOF
+
+### 2.5 Attach to the same role
+aws iam put-role-policy \
+  --role-name LangflowBedrockRole \
+  --policy-name S3ReadAccess \
+  --policy-document file://s3-permissions.json
+
+
+
 ---
 
 ## Step 3: Attach Bedrock Permissions to the Role
