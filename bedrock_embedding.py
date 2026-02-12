@@ -89,6 +89,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
             show=False,
             real_time_refresh=True,
         ),
+        # ── Model dropdowns: one per provider that needs static options ──
         DropdownInput(
             name="model",
             display_name="Model Name",
@@ -96,6 +97,15 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
             value=OPENAI_EMBEDDING_MODEL_NAMES[0],
             info="Select the embedding model to use",
             refresh_button=True,
+            show=True,
+        ),
+        DropdownInput(
+            name="bedrock_model_id",
+            display_name="Model Name",
+            options=AWS_EMBEDDING_MODEL_IDS,
+            value=AWS_EMBEDDING_MODEL_IDS[0],
+            info="Select the Amazon Bedrock embedding model to use",
+            show=False,
         ),
         SecretStrInput(
             name="api_key",
@@ -180,13 +190,15 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
             logger.exception("Error fetching models")
             return WATSONX_EMBEDDING_MODEL_NAMES
 
-    def _get_provider(self) -> str:
-        """Safely get the current provider value."""
-        return getattr(self, "provider", "OpenAI") or "OpenAI"
+    def _get_model_id(self) -> str:
+        """Get the effective model ID based on the current provider."""
+        if self.provider == "Amazon Bedrock":
+            return self.bedrock_model_id
+        return self.model
 
     def build_embeddings(self) -> Embeddings:
         provider = self.provider
-        model = self.model
+        model = self._get_model_id()
         api_key = self.api_key
         api_base = self.api_base
         base_url_ibm_watsonx = self.base_url_ibm_watsonx
@@ -284,6 +296,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
                 msg = "Please install langchain-aws: pip install langchain-aws"
                 raise ImportError(msg) from None
 
+            # With IRSA, boto3 automatically retrieves credentials from pod metadata
             init_params: dict[str, Any] = {
                 "model_id": model,
                 "region_name": self.bedrock_region,
@@ -313,13 +326,15 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
     async def update_build_config(
         self, build_config: dotdict, field_value: Any, field_name: str | None = None
     ) -> dotdict:
-        # ── Early exit: only process fields we care about ──
-        provider = self._get_provider()
-
-        # Block any field that would trigger Ollama localhost calls when not using Ollama
-        if field_name not in ("provider", "base_url_ibm_watsonx") and provider != "Ollama":
-            if field_name in ("ollama_base_url", "model", "api_key"):
-                return build_config
+        # ── Guard: skip irrelevant field changes ──
+        if field_name == "api_key":
+            return build_config
+        if field_name == "ollama_base_url" and self.provider != "Ollama":
+            return build_config
+        if field_name == "model" and self.provider != "Ollama":
+            return build_config
+        if field_name == "base_url_ibm_watsonx" and self.provider != "IBM watsonx.ai":
+            return build_config
 
         if field_name == "provider":
             # --- Reset ALL provider-specific fields ---
@@ -329,14 +344,17 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
             build_config["truncate_input_tokens"]["show"] = False
             build_config["input_text"]["show"] = False
             build_config["bedrock_region"]["show"] = False
+            build_config["bedrock_model_id"]["show"] = False
             build_config["normalize"]["show"] = False
             build_config["api_base"]["show"] = False
             build_config["api_key"]["show"] = False
             build_config["api_key"]["required"] = False
             build_config["api_key"]["value"] = ""
+            build_config["model"]["show"] = False
 
             # ── OpenAI ──
             if field_value == "OpenAI":
+                build_config["model"]["show"] = True
                 build_config["model"]["options"] = OPENAI_EMBEDDING_MODEL_NAMES
                 build_config["model"]["value"] = OPENAI_EMBEDDING_MODEL_NAMES[0]
                 build_config["api_key"]["display_name"] = "OpenAI API Key"
@@ -348,6 +366,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
 
             # ── Ollama ──
             elif field_value == "Ollama":
+                build_config["model"]["show"] = True
                 build_config["ollama_base_url"]["show"] = True
                 if not build_config["ollama_base_url"].get("value"):
                     build_config["ollama_base_url"]["value"] = DEFAULT_OLLAMA_URL
@@ -374,6 +393,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
 
             # ── IBM watsonx.ai ──
             elif field_value == "IBM watsonx.ai":
+                build_config["model"]["show"] = True
                 ibm_models = self.fetch_ibm_models(base_url=self.base_url_ibm_watsonx)
                 build_config["model"]["options"] = ibm_models
                 build_config["model"]["value"] = ibm_models[0] if ibm_models else ""
@@ -387,8 +407,8 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
 
             # ── Amazon Bedrock ──
             elif field_value == "Amazon Bedrock":
-                build_config["model"]["options"] = AWS_EMBEDDING_MODEL_IDS
-                build_config["model"]["value"] = AWS_EMBEDDING_MODEL_IDS[0]
+                # Use dedicated bedrock_model_id dropdown instead of shared model dropdown
+                build_config["bedrock_model_id"]["show"] = True
                 build_config["api_key"]["display_name"] = "API Key (Not required — uses IRSA)"
                 build_config["bedrock_region"]["show"] = True
                 build_config["normalize"]["show"] = True
@@ -398,7 +418,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
             build_config["model"]["options"] = ibm_models
             build_config["model"]["value"] = ibm_models[0] if ibm_models else ""
 
-        elif field_name == "ollama_base_url" and provider == "Ollama":
+        elif field_name == "ollama_base_url":
             ollama_url = field_value or self.ollama_base_url or DEFAULT_OLLAMA_URL
             if await is_valid_ollama_url(url=ollama_url):
                 try:
@@ -416,7 +436,8 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
                     build_config["model"]["options"] = []
                     build_config["model"]["value"] = ""
 
-        elif field_name == "model" and provider == "Ollama":
+        elif field_name == "model":
+            # Only reaches here when provider == "Ollama" (guarded above)
             ollama_url = self.ollama_base_url or DEFAULT_OLLAMA_URL
             if await is_valid_ollama_url(url=ollama_url):
                 try:
